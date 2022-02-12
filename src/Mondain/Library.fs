@@ -3,6 +3,7 @@ open MongoDB.Driver
 open MongoDB.Bson
 open System
 open System.Linq.Expressions
+open System.Runtime.CompilerServices
 
 type BaseMongoContext<'a> = 
     {
@@ -22,33 +23,20 @@ type MongoQueryContext<'a, 'b> =
     |}
 
 type MongoUpdateContext<'a> =
-    {
+    {|
         query: BaseMongoContext<'a>
         update: UpdateDefinition<'a>
-    }
+        options: FindOneAndUpdateOptions<'a>
+    |}
+
+type MongoUpdateContext<'a, 'b> =
+    {|
+        query: BaseMongoContext<'a>
+        update: UpdateDefinition<'a>
+        options: FindOneAndUpdateOptions<'a, 'b>
+    |}
 
 module Builder =
-    [<Struct;NoComparison;NoEquality>]
-    type SetUpdate<'a> = private W of 'a
-    [<Struct;NoComparison;NoEquality>]
-    type IncrUpdate<'a> = private I of 'a
-
-    [<AutoOpen>]
-    module Operators =
-        let (:=) (a: 'a) (_: 'a) = W a
-
-        let (+=) (a: 'a) (_: 'a) = I a
-
-    type MongoExpressionParser =
-        static member ToExpression(e: Expression<Func<'T, SetUpdate<'a>>>) : struct ('a * Expression<Func<'T, 'a>>) =
-            failwith ""
-
-        static member ToExpression(e: Expression<Func<'T, IncrUpdate<'a>>>) : struct ('a * Expression<Func<'T, 'a>>) =
-            failwith ""
-
-
-    //let query (collection: IMongoCollection<_>) =
-    //    collection.
     [<AbstractClass>]
     type BaseMongoBuilder() =
         member _.Yield(x: 'T) = ()
@@ -151,35 +139,140 @@ module Builder =
             ctx
 
 
+
+    [<Extension>]
+    type SeqExtensions =
+        [<Extension>]
+        static member arrayFilter(_s: System.Collections.Generic.IEnumerable<'T>, _i: Func<'T, bool>): 'T =
+            failwith "This is only intended to be used as part of an array filter in the mongo DSL."
+
+    [<Struct; NoComparison;NoEquality>]
+    type Update<'a> = 
+        private 
+        | SetUpdate of Set:'a
+        | IncrUpdate of Incr:'a
+    
+    [<AutoOpen>]
+    module Operators =
+        let (:=) (_: 'a) (a: 'a) = SetUpdate a
+    
+        let (+=) (_: 'a) (a: 'a) = IncrUpdate a
+
+
+    let createDefinition(e: Expression<Func<'T, Update<'a>>>) : struct (FieldDefinition<'T, 'a> * Update<'a> * _) =
+        match e.Body with
+        | :? MethodCallExpression as mce ->
+            let lhs = mce.Arguments.[0]
+            let rhs = mce.Arguments.[1] :?> ConstantExpression
+            let value = rhs.Value :?> 'a
+            let update = 
+                match mce.Method.Name with
+                | "op_ColonEquals" -> SetUpdate value
+                | "op_AdditionAssignment" -> IncrUpdate value
+                | _ -> failwith "stop creating wrapper types in unintended ways."
+
+            let (setExpression, filters) = ExpressionParsing.checkArrayFilters(lhs)
+
+            let fieldDef = 
+                if filters.Length > 0 then
+                    FieldDefinition<_, _>.op_Implicit setExpression
+                else
+                    Expression.Lambda<Func<_, _>>(lhs, e.Parameters.[0]) 
+                    |> ExpressionFieldDefinition<_, _> 
+                    :> FieldDefinition<_,_>
+
+            struct (fieldDef, update, filters)
+        | _ -> failwith "stop creating wrapper types in unintended ways."
+
+    let createUpdate f =
+        let struct (update, value, filters) = createDefinition(f)
+        let builder = Builders<'T>.Update
+        
+        let updateDef = 
+            match value with
+            | SetUpdate value -> 
+                builder.Set(update, value)
+            | IncrUpdate value -> 
+                builder.Inc(update, value)
+
+        struct (updateDef, filters)
+
+
     type MongoUpdateBuilder() =
         inherit BaseMongoBuilder()
 
         [<CustomOperation("update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
         member this.Update(
             ctx: BaseMongoContext<'T>, 
-            [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, SetUpdate<'a>>>) =
-            let struct (value, update) = MongoExpressionParser.ToExpression(f)
+            [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, Update<'a>>>) =
+            let struct (updateDef, filters) = createUpdate f
+            let opts = FindOneAndUpdateOptions<_>(ArrayFilters = filters)
+            {| query = ctx; update = updateDef; options = opts |}
 
-            let builder = UpdateDefinitionBuilder<'T>().Set(update, value)
-            { query = ctx; update = builder }
-
-        [<CustomOperation("update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
-        member this.Increment(
-            ctx: BaseMongoContext<'T>, 
-            [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, IncrUpdate<'a>>>) =
-            let struct (value, update) = MongoExpressionParser.ToExpression(f)
-
-            let builder = UpdateDefinitionBuilder<'T>().Inc(update, value)
-            { query = ctx; update = builder }
 
         [<CustomOperation("update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
         member this.Update(
             ctx: MongoUpdateContext<'T>, 
-            [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, SetUpdate<'a>>>) =
-            let struct (value, update) = MongoExpressionParser.ToExpression(f)
+            [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, Update<'a>>>) =
+            let struct (updateDef, filters) = createUpdate f     
+            ctx.options.ArrayFilters <- [| yield! ctx.options.ArrayFilters; yield! filters |]
+            {| ctx with update = Builders<'T>.Update.Combine(ctx.update, updateDef) |}
 
-            { ctx with update = ctx.update.Set(update, value) }
+        [<CustomOperation("returnDoc", MaintainsVariableSpace = true)>]
+        member _.ReturnDocument(ctx: MongoUpdateContext<'T> , ret) =
+            ctx.options.ReturnDocument <- ret
+            ctx
 
+        [<CustomOperation("isUpsert", MaintainsVariableSpace = true)>]
+        member _.IsUpsert(ctx: MongoUpdateContext<'T> , upsert: bool) =
+            ctx.options.IsUpsert <- upsert
+            ctx
+
+        [<CustomOperation("sort", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+        member _.Sort(ctx: MongoUpdateContext<'T>, text: string) =
+            let sort = Builders<_>.Sort.MetaTextScore(text)            
+            match ctx.options.Sort with
+            | null -> ctx.options.Sort <- sort
+            | s -> ctx.options.Sort <- Builders<_>.Sort.Combine(sort, s)
+            ctx
+
+        [<CustomOperation("sortBy", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+        member _.SortBy(ctx: MongoUpdateContext<'T>, [<ProjectionParameter; ReflectedDefinition>] sort: Expression<_>) =
+            let sort = Builders<_>.Sort.Ascending(sort)            
+            match ctx.options.Sort with
+            | null -> ctx.options.Sort <- sort
+            | s -> ctx.options.Sort <- Builders<_>.Sort.Combine(sort, s)
+            ctx
+
+        [<CustomOperation("sortByDesc", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+        member _.SortDesc(ctx: MongoUpdateContext<'T>, [<ProjectionParameter; ReflectedDefinition>] sort: Expression<_>) =
+            let sort = Builders<_>.Sort.Descending(sort)            
+            match ctx.options.Sort with
+            | null -> ctx.options.Sort <- sort
+            | s -> ctx.options.Sort <- Builders<_>.Sort.Combine(sort, s)
+            ctx
+
+        [<CustomOperation("select")>]
+        member _.Projection(
+            ctx: MongoUpdateContext<'T>, 
+            [<ProjectionParameter; ReflectedDefinition>] p: Expression<Func<'T, 'TProj>>)
+                : MongoUpdateContext<_,_> =
+            let proj = Builders<'T>.Projection.Expression<'TProj>(p)
+            //todo copy all options
+            let opts = FindOneAndUpdateOptions<_,_>(Projection = proj, Sort = ctx.options.Sort)                
+            {| ctx with options = opts |}
+
+        member _.Run(ctx: MongoUpdateContext<'T>) =
+            let filter = ctx.query.filters
+            let update = ctx.update
+            let options = ctx.options
+            ctx.query.collection.FindOneAndUpdateAsync(filter, update, options)
+
+        member _.Run(ctx: MongoUpdateContext<'T, 'TProj>) =
+            let filter = ctx.query.filters
+            let update = ctx.update
+            let options = ctx.options
+            ctx.query.collection.FindOneAndUpdateAsync(filter, update, options)
 
 open Builder
 module Explore =
@@ -207,6 +300,6 @@ module Explore =
                     where (v.Id = "")
                     where (v.Name = "")
                     update (v.Version += 2)
-
+                    select {| a = v.Name |}
             }
         ()

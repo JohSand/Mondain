@@ -11,20 +11,37 @@ open System.Reflection
 
 [<AutoOpen>]
 module private RenderCache =
-    let constructorCache = ConcurrentDictionary<Type,ConstructorInfo>()
-    let methodCache = ConcurrentDictionary<Type,MethodInfo>()
-    ()
-    let compile<'T> (mi: MethodInfo) =
-        //let d = Delegate.CreateDelegate(typeof<int>, null, mi, true)
-        
-        let this = Expression.Parameter(mi.DeclaringType, "this")
-        let parameters = [
-            for parameter in mi.GetParameters() do
-                Expression.Parameter(parameter.ParameterType, parameter.Name)
-        ]
-        let call = Expression.Call(this, mi, seq { for p in parameters do p :> Expression })
-        Expression.Lambda<'T>(call, (this:: parameters) :> seq<_>).Compile()
+    let constructorCache = ConcurrentDictionary<Type, Func<obj[], obj>>()
+    let methodCache = ConcurrentDictionary<Type, Func<obj, obj[], obj>>()
+    
+    let compileCtor (ctor: ConstructorInfo) =
+        let args = Expression.Parameter(typeof<obj[]>, "args")
 
+        let paramsExprs = 
+            [| for p in ctor.GetParameters() do p.ParameterType |] 
+            |> Array.mapi (fun i par ->
+                let arg = Expression.ArrayIndex(args, Expression.Constant(i, typeof<int>))
+                Expression.Convert(arg, par) :> Expression
+            )
+        let newExpr = Expression.New(ctor, paramsExprs)
+        let convert = Expression.Convert(newExpr, typeof<obj>)
+        Expression.Lambda(convert, args).Compile() :?> Func<obj[], obj>
+        
+    //we cannot compile it typed, since we don't have enough type info. Compile in casts
+    let compileMethod (``type``: Type) (mi: MethodInfo) =
+        let args = Expression.Parameter(typeof<obj[]>, "args")
+
+        let paramsExprs = 
+            [| for p in mi.GetParameters() do p.ParameterType |] 
+            |> Array.mapi (fun i par ->
+                let arg = Expression.ArrayIndex(args, Expression.Constant(i, typeof<int>))
+                Expression.Convert(arg, par) :> Expression
+            )
+
+        let target = Expression.Parameter(typeof<obj>, "target")
+        let call = Expression.Call(Expression.Convert(target, ``type``), mi, paramsExprs)
+        let convert = Expression.Convert(call, typeof<obj>)
+        Expression.Lambda(convert, target, args).Compile() :?> Func<obj, obj[], obj>
         
 
 type NamedArrayFilterDefinition(filterName: string, filterExpr: Expression) =
@@ -33,30 +50,27 @@ type NamedArrayFilterDefinition(filterName: string, filterExpr: Expression) =
     override _.ItemType = ``type``
     //since we wont know the type at compile time
     member _.BaseFilterDefinitionType = typedefof<ExpressionFilterDefinition<_>>.MakeGenericType(``type``)
-    //we could gain perf here by caching/compiling the methods instead of always using reflection.
+    
     override this.Render(_s, r, p) =
         //this is ExpressionFilterDefinition<``type``>, but we don't know type at compile time.
-        let ctor1 = constructorCache.GetOrAdd(filterExpr.GetType(), fun t -> this.BaseFilterDefinitionType.GetConstructor([| t |]) )
+        let ctor1 = constructorCache.GetOrAdd(
+                        this.BaseFilterDefinitionType, 
+                        fun (t: Type) -> t.GetConstructor(types=[| filterExpr.GetType() |]) |> compileCtor
+                    )
 
         let fd = ctor1.Invoke([| filterExpr |])
 
-        //let fd = this.BaseFilterDefinitionType.GetConstructor([| filterExpr.GetType() |]).Invoke([| filterExpr |])
         //use the same Render as ExpressionFilterDefinition.
-        let mi = methodCache.GetOrAdd(
+        let render = methodCache.GetOrAdd(
                     this.BaseFilterDefinitionType,
                     fun t -> 
                         let registryType = typedefof<IBsonSerializer<_>>.MakeGenericType(``type``)
-                        let mi = t.GetMethod("Render", [| registryType; typeof<IBsonSerializerRegistry>; typeof<Linq.LinqProvider> |])
-                        mi
+                        t.GetMethod("Render", [| registryType; typeof<IBsonSerializerRegistry>; typeof<Linq.LinqProvider> |])
+                        |> compileMethod t
                     )
+        
+        let filter = render.Invoke(fd, [| r.GetSerializer(``type``); r; p |]) :?> BsonDocument
 
-        let compiled = compile<Func<_,_,_,_,BsonDocument>> mi
-
-        let wat = compiled.Invoke(fd, r.GetSerializer(``type``), r, p)
-        //let mi = this.BaseFilterDefinitionType.GetMethod("Render", [| registryType; typeof<IBsonSerializerRegistry>; typeof<Linq.LinqProvider> |])
-        let filter = mi
-                         .Invoke(fd, [| r.GetSerializer(``type``); r; p |]) 
-                         :?> BsonDocument
         //add the name of the filter
         filter.Names
             .Zip(filter.Values, (fun eName value -> (filterName + "." + eName, value)))   

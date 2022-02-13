@@ -53,23 +53,24 @@ type NamedArrayFilterDefinition(filterName: string, filterExpr: Expression) =
     
     override this.Render(_s, r, p) =
         //this is ExpressionFilterDefinition<``type``>, but we don't know type at compile time.
-        let ctor1 = constructorCache.GetOrAdd(
-                        this.BaseFilterDefinitionType, 
-                        fun (t: Type) -> t.GetConstructor(types=[| filterExpr.GetType() |]) |> compileCtor
-                    )
+        let s = r.GetSerializer(``type``)
 
-        let fd = ctor1.Invoke([| filterExpr |])
+        let filterDef =
+            constructorCache
+                .GetOrAdd(
+                    this.BaseFilterDefinitionType,
+                    fun (t: Type) -> t.GetConstructor(types = [| filterExpr.GetType() |]) |> compileCtor
+                )
+                .Invoke([| filterExpr |])
 
         //use the same Render as ExpressionFilterDefinition.
-        let render = methodCache.GetOrAdd(
+        let filter =
+            methodCache
+                .GetOrAdd(
                     this.BaseFilterDefinitionType,
-                    fun t -> 
-                        let registryType = typedefof<IBsonSerializer<_>>.MakeGenericType(``type``)
-                        t.GetMethod("Render", [| registryType; typeof<IBsonSerializerRegistry>; typeof<Linq.LinqProvider> |])
-                        |> compileMethod t
-                    )
-        
-        let filter = render.Invoke(fd, [| r.GetSerializer(``type``); r; p |]) :?> BsonDocument
+                    fun t -> t.GetMethod("Render", [| s.GetType(); r.GetType(); p.GetType() |]) |> compileMethod t
+                )
+                .Invoke(filterDef, [| s; r; p |]) :?> BsonDocument
 
         //add the name of the filter
         filter.Names

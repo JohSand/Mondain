@@ -8,6 +8,12 @@
   <ItemGroup>
     <Compile Include="NamedArrayFilterDefinition.fs" />
     <Compile Include="ExpressionParsing.fs" />
+    <Compile Include="Builders\Abstractions.fs" />
+    <Compile Include="Builders\Core.fs" />
+    <Compile Include="Builders\FindOne.fs" />
+    <Compile Include="Builders\Update.fs" />
+    <Compile Include="Builders\FindOneAndUpdate.fs" />
+    <Compile Include="Builders\Open.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>
 

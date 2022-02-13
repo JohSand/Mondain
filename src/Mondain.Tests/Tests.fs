@@ -3,7 +3,9 @@ module Mondain.Tests
 open System
 open Xunit
 open System.Linq.Expressions
-open Mondain.Builder
+open Mondain.Builders.Operators
+open Mondain.Builders.Extensions
+open Mondain.Builders.Core
 open MongoDB.Bson
 open MongoDB.Bson.Serialization
 open MongoDB.Driver
@@ -41,7 +43,7 @@ let ``My test`` () =
     let expected = builder.Inc((fun (d: Demo) -> d.Version), 1)
 
     let exp = TestHelper.toExpression (fun (d: Demo) -> d.Version += 1)
-    let struct (a, b) = createUpdate exp
+    let struct (a, b) = createUpdate exp 0
 
     Assert.RenderedEqual(expected, a)
 
@@ -50,7 +52,7 @@ let ``My test`` () =
 [<Fact>]
 let ``My test2`` () =
     let exp = TestHelper.toExpression (fun d -> d.Members.arrayFilter(fun i -> i.Id = "").Name := "x")
-    let struct (a, b) = createUpdate exp
+    let struct (a, b) = createUpdate exp 1
     Assert.Equal("{ \"$set\" : { \"Members.$[filter_1].Name\" : \"x\" } }", render a)
     let filter = Assert.Single(b)
     Assert.Equal("{ \"filter_1._id\" : \"\" }", render2<Demo> filter)

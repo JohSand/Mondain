@@ -1,12 +1,7 @@
 ﻿namespace Mondain
 open MongoDB.Driver
-open System
-open System.Linq.Expressions
-open System.Runtime.CompilerServices
 
-open Mondain.Builders.Abstractions
 open Mondain.Builders
-open Mondain.Builders.Core
 open System.Linq
 
 module Explore =
@@ -27,16 +22,16 @@ module Explore =
             }
         ()
 
-    let explore2 (eff: IMongoCollection<Demo>) =
-        let t =
-            findUpdate {
-                for v in eff do
-                    where (v.Id = "")
-                    update (v.Name := "")
-                    update (v.Members ++ { Id = ""; Name = "test" })
-                    update (v.Members @@ [ { Id = ""; Name = "test" } ])
-                    update (v.Members.arrayFilter(fun i -> i.Id = "id").Name := "name")
-                    update (v.Version *= 5)
-                    select {| a = v.Name |}
-            }
-        ()
+    let explore2 (collection: IMongoCollection<Demo>) =
+        findUpdate {
+            for v in collection do
+                where (v.Id = "")
+                update (v.Name := "")
+                update (v.Members ++ { Id = ""; Name = "test" })
+                update (v.Members.removeWhere(fun i -> i.Id = "id"))
+                update (v.Members.arrayFilter(fun i -> i.Id = "id").Name := "name")
+                update (v.Version *= 5)
+                returnDoc ReturnDocument.After
+                select {| a = v.Name |}
+        }
+

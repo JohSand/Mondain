@@ -1,9 +1,6 @@
 ﻿module Mondain.Builders.Abstractions
 
 open MongoDB.Driver
-open System
-open System.Linq.Expressions
-open System.Runtime.CompilerServices
 
 type BaseMongoContext<'a> = 
     {

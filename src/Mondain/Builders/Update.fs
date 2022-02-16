@@ -28,6 +28,32 @@ type UpdateBuilder() =
         ctx.options.ArrayFilters <- [| yield! ctx.options.ArrayFilters; yield! filters |]
         {| ctx with update = Builders<'T>.Update.Combine(ctx.update, updateDef) |}
 
+    [<CustomOperation("update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+    member this.Update(
+        ctx: BaseMongoContext<'T>, 
+        [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, SeqUpdate<'a>>>) =
+        let struct (updateDef, filters) = createUpdateMulti f 0
+        let opts = UpdateOptions(ArrayFilters = filters)
+        {| query = ctx; update = updateDef; options = opts |}
+
+
+    [<CustomOperation("update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+    member this.Update(
+        ctx: MongoUpdateContext<'T>, 
+        [<ProjectionParameter; ReflectedDefinition>] f: Expression<Func<'T, SeqUpdate<'a>>>) =
+        let struct (updateDef, filters) = createUpdateMulti f (ctx.options.ArrayFilters :?> ArrayFilterDefinition[]).Length
+        ctx.options.ArrayFilters <- [| yield! ctx.options.ArrayFilters; yield! filters |]
+        {| ctx with update = Builders<'T>.Update.Combine(ctx.update, updateDef) |}
+
+    [<CustomOperation("configure_update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+    member this.ConfigureUpdate(ctx: BaseMongoContext<'T>, updateDef) =
+        {| ctx with update = updateDef |}
+
+    [<CustomOperation("configure_update", MaintainsVariableSpace = true, AllowIntoPattern = true)>]
+    member this.ConfigureUpdate(ctx: MongoUpdateContext<'T>, updateDef) =
+        {| ctx with update = Builders<'T>.Update.Combine(ctx.update, updateDef) |}
+
+
     [<CustomOperation("isUpsert", MaintainsVariableSpace = true)>]
     member _.IsUpsert(ctx: MongoUpdateContext<'T> , upsert: bool) =
         ctx.options.IsUpsert <- upsert

@@ -6,8 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="NamedArrayFilterDefinition.fs" />
     <Compile Include="ExpressionParsing.fs" />
+    <Compile Include="NamedArrayFilterDefinition.fs" />
     <Compile Include="Builders\Abstractions.fs" />
     <Compile Include="Builders\Core.fs" />
     <Compile Include="Builders\FindOne.fs" />

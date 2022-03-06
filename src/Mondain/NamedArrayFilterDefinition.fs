@@ -33,7 +33,7 @@ type NamedArrayFilterDefinition(filterName: string, filterExpr: Expression) =
             renderMethodCache
                 .GetOrAdd(
                     this.BaseFilterDefinitionType,
-                    fun t -> t.GetMethod("Render", [| s.GetType(); r.GetType(); p.GetType() |]) |> compileMethod t
+                    fun t -> t.GetMethod("Render", [| s.GetType(); r.GetType(); p.GetType() |]) |> compileMethod
                 )
                 .Invoke(filterDef, [| s; r; p |]) :?> BsonDocument
 

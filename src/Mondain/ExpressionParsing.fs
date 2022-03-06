@@ -14,7 +14,7 @@ let serializerRegistry = BsonSerializer.SerializerRegistry
 module internal RenderCache =
     let constructorCache = ConcurrentDictionary<Type, Func<obj[], obj>>()
     let renderMethodCache = ConcurrentDictionary<Type, Func<obj, obj[], obj>>()
-    
+    let updatorMethodCache = ConcurrentDictionary<string, Func<obj, obj[], obj>>()
     let compileCtor (ctor: ConstructorInfo) =
         let args = Expression.Parameter(typeof<obj[]>, "args")
 
@@ -29,7 +29,7 @@ module internal RenderCache =
         Expression.Lambda(convert, args).Compile() :?> Func<obj[], obj>
         
     //we cannot compile it typed, since we don't have enough type info. Compile in casts
-    let compileMethod (``type``: Type) (mi: MethodInfo) =
+    let compileMethod (mi: MethodInfo) =
         let args = Expression.Parameter(typeof<obj[]>, "args")
 
         let paramsExprs = 
@@ -40,7 +40,15 @@ module internal RenderCache =
             )
 
         let target = Expression.Parameter(typeof<obj>, "target")
-        let call = Expression.Call(Expression.Convert(target, ``type``), mi, paramsExprs)
+
+        let call = 
+            if mi.IsStatic then
+                Expression.Call( mi, paramsExprs)
+            else                
+                Expression.Call(Expression.Convert(target, mi.DeclaringType), mi, paramsExprs)
+
+        
+
         let convert = Expression.Convert(call, typeof<obj>)
         Expression.Lambda(convert, target, args).Compile() :?> Func<obj, obj[], obj>
 
@@ -102,5 +110,4 @@ let rec construct (expr: Expression) =
         else
             let args = [| for a in rhs.Arguments -> construct a |]
             rhs.Method.Invoke(null, args)
-
     | _ -> Unchecked.defaultof<_>

@@ -9,6 +9,7 @@ open Mondain.Builders.Core
 open MongoDB.Bson
 open MongoDB.Bson.Serialization
 open MongoDB.Driver
+open Mondain.TestModels
 
 let serializerRegistry = BsonSerializer.SerializerRegistry
 
@@ -36,8 +37,7 @@ type Xunit.Assert with
 type TestHelper =
     static member toExpression([<ReflectedDefinition>] exp: Expression<Func<'T, _>>) = exp
 
-type Inner = { Id: string; Name: string; Dummy: obj }
-type Demo = { Id: string; Name: string; Version: int; Members: Inner seq }
+
 
 [<Fact>]
 let ``My test`` () =
@@ -90,7 +90,7 @@ let ``My test4`` () =
     let a = [ { Id = "i"; Name = "name"; Dummy = obj()  } ]
 
     let exp =
-        TestHelper.toExpression (fun d -> d.Members @@ [ { Id = "i"; Name = "name"; Dummy = obj()  } ])
+        TestHelper.toExpression (fun d -> d.Members @@ [| { Id = "i"; Name = "name"; Dummy = obj()  } |])
 
     let struct (a, _) = createUpdateMulti exp 0
     let dbg = render a
@@ -104,6 +104,19 @@ let ``My test5`` () =
 
     let exp =
         TestHelper.toExpression (fun d -> d.Members.removeItem a)
+
+    let struct (a, _) = createUpdateMulti exp 0
+    let dbg = render a
+    Assert.RenderedEqual(expected, a)
+
+[<Fact>]
+let ``My test6`` () =
+    let a = { Id = "i"; Name = "name"; Dummy = obj()  }
+    let builder = UpdateDefinitionBuilder<_>()
+    let expected = builder.PullAll((fun d -> d.Members), [ a ])
+
+    let exp =
+        TestHelper.toExpression (fun d -> d.Members.removeItems [| a |])
 
     let struct (a, _) = createUpdateMulti exp 0
     let dbg = render a

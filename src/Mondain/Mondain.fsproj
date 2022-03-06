@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <PackageReference Include="MongoDB.Driver" Version="2.14.1" />
+    <PackageReference Include="MongoDB.FSharp" Version="0.1.0" />
   </ItemGroup>
 
 </Project>

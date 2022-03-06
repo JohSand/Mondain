@@ -3,13 +3,13 @@
 open System
 open System.Collections.Generic
 open System.Runtime.CompilerServices
+open System.Reflection
 
 open Mondain
 open Mondain.ExpressionParsing
 
 open MongoDB.Driver
 open System.Linq.Expressions
-
 
 type Update<'a> = 
     private 
@@ -44,7 +44,7 @@ type SeqUpdate<'a> =
     | PullAllUpdate of seq<'a>
     | PullFilterUpdate of FilterDefinition<'a>
     | PushUpdate of 'a
-    | PushEachUpdate of IEnumerable<'a>
+    | PushEachUpdate of seq<'a>
     member internal this.ToUpdateDefinition(selector: FieldDefinition<'T, seq<'a>>) =
         let update = FieldDefinition<_,_>.op_Implicit selector
         let b = Builders<'T>.Update
@@ -63,8 +63,6 @@ type SeqUpdate<'a> =
   //member Min<'TField> : field: Expression<System.Func<'TDocument,'TField>> * value: 'TField -> UpdateDefinition<'TDocument>
   //member PopFirst: field: Expression<System.Func<'TDocument,obj>> -> UpdateDefinition<'TDocument>
   //member PopLast: field: Expression<System.Func<'TDocument,obj>> -> UpdateDefinition<'TDocument>
-  //member Pull<'TItem> : field: Expression<System.Func<'TDocument,IEnumerable<'TItem>>> * value: 'TItem -> UpdateDefinition<'TDocument>
-  //member PullAll<'TItem> : field: Expression<System.Func<'TDocument,IEnumerable<'TItem>>> * values: IEnumerable<'TItem> -> UpdateDefinition<'TDocument>
 
   //member Rename: field: Expression<System.Func<'TDocument,obj>> * newName: string -> UpdateDefinition<'TDocument>
 
@@ -87,10 +85,10 @@ module Extensions =
             SeqUpdate.PullUpdate item
         [<Extension>]
         static member removeItems<'TItem>(_: IEnumerable<'TItem>, items: IEnumerable<'TItem>) : SeqUpdate<'TItem> =
-            SeqUpdate.PushEachUpdate items
+            SeqUpdate.PullAllUpdate items
         [<Extension>]
-        static member removeWhere<'T>(_: IEnumerable<'T>, p: Func<'T, bool>) : SeqUpdate<'T> =
-            failwith "This is only intended to be used as part of an array filter in the mongo DSL."
+        static member removeWhere<'T>(_: IEnumerable<'T>,  f: Func<'T, bool>) : SeqUpdate<'T> =
+            failwith "This needs to be handled differently"
 
 [<AutoOpen>]
 module Operators =
@@ -126,15 +124,13 @@ module Core =
             let selector = mce.Arguments[0]
             let updateExpr = mce.Arguments[1] 
             let update = 
-                match mce.Method.Name with
-                | "op_ColonEquals" ->             
-                    construct updateExpr :?> 'a |> SetUpdate
-                | "op_AtEquals" -> 
-                    construct updateExpr :?> 'a |>  SetOnInsertUpdate
-                | "op_AdditionAssignment" -> 
-                    construct updateExpr :?> 'a |> IncrUpdate
-                | name -> 
-                    failwith $"stop creating wrapper types in unintended ways. method {name}"
+                    let arg = construct updateExpr
+                    let args = [| box Unchecked.defaultof<'a>; arg |]
+
+                    updatorMethodCache
+                        .GetOrAdd(mce.Method.Name, (fun _ mi -> compileMethod mi), mce.Method)    
+                        .Invoke(Unchecked.defaultof<_>, args)
+                        :?> Update<'a>
 
             let (setter, filters) = checkArrayFilters selector count
 
@@ -155,21 +151,18 @@ module Core =
                 | "removeWhere" ->
                     let rhs = updateExpr :?> Expression<Func<'a, bool>>
                     SeqUpdate.PullFilterUpdate (FilterDefinition<_>.op_Implicit(rhs))
-                | "op_PlusPlus" ->
-                    let item = construct updateExpr :?> 'a
-                    SeqUpdate.PushUpdate item  
-                | "removeItem" ->
-                    let item = construct updateExpr:?> 'a
-                    SeqUpdate.PullUpdate item
-                | "op_AtAt" ->
-                    match construct updateExpr with
-                    | :? (obj[]) as value ->
-                        SeqUpdate.PushEachUpdate (Array.ConvertAll(value, fun item -> item :?> 'a))
-                    | a ->
-                        SeqUpdate.PushEachUpdate(a :?> 'a seq)
-
-                | name -> 
-                    failwith $"stop creating wrapper types in unintended ways. method {name}"
+                | _ -> 
+                    let arg = construct updateExpr
+                    let arg =
+                        match arg with 
+                        //the array cast is not working the default way
+                        | :? (obj[]) as value -> Array.ConvertAll(value, fun item -> item :?> 'a) |> box
+                        | a -> a
+                    let args = [| Unchecked.defaultof<obj>; arg |]
+                    updatorMethodCache
+                        .GetOrAdd(mce.Method.Name, (fun _ mi-> compileMethod mi), mce.Method)   
+                        .Invoke(Unchecked.defaultof<_>, args)
+                        :?> SeqUpdate<'a>
 
             let (setter, filters) = checkArrayFilters selector count
 
